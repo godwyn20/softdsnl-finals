@@ -1,221 +1,212 @@
 """
-Train a simplified image-captioning pipeline (Fixed Version)
------------------------------------------------------------
-✅ Handles mismatched filenames (spaces, lowercase)
-✅ Prints progress clearly
-✅ Generates training curve and table images for report
+Train an image captioning model using Flickr8k-style data.
+------------------------------------------------------------
+ Dual-input model (image features + text sequence)
+ Tracks accuracy, val_accuracy, loss, val_loss
+ Configurable IMAGE_LIMIT and EPOCHS
+ Generates training summary table image
+ Saves tokenizer + model to result/caption/
 """
 
 import os
 import pickle
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 from tqdm import tqdm
-from glob import glob
-
-import tensorflow as tf
 from tensorflow.keras.applications.inception_v3 import InceptionV3, preprocess_input
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.models import Model
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.layers import Input, Dense, Embedding, LSTM, add
-from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Embedding, LSTM, Dense, Dropout, add
 from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.optimizers import Adam
 
 # ---------- CONFIG ----------
-IMAGES_DIR = "../data/images"      # relative to model_training/
-CAPTIONS_FILE = "../data/captions.txt"
-FEATURES_FILE = "data/image_features.npy"
-TOKENIZER_FILE = "data/tokenizer.pkl"
-CAPTION_MODEL_FILE = "caption_model.h5"
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+RESULT_DIR = os.path.join(BASE_DIR, "result", "caption")
 
-IMG_SHAPE = (299, 299)
-EMBED_DIM = 256
-MAX_WORDS = 10000
+CAPTIONS_FILE = os.path.join(DATA_DIR, "captions.txt")
+IMAGES_DIR = os.path.join(DATA_DIR, "images")
+
+TOKENIZER_FILE = os.path.join(RESULT_DIR, "tokenizer.pkl")
+FEATURES_FILE = os.path.join(RESULT_DIR, "image_features.npy")
+CAPTION_MODEL_FILE = os.path.join(RESULT_DIR, "caption_model.h5")
+
+IMAGE_LIMIT = 500  # lower for light training
+EPOCHS = 5
 MAX_LEN = 30
+EMBED_DIM = 128
+LSTM_UNITS = 256
 # ----------------------------
 
-def load_captions(fname):
-    captions_dict = {}
-    with open(fname, "r", encoding="utf8") as f:
+os.makedirs(RESULT_DIR, exist_ok=True)
+
+
+# ---------- STEP 1: LOAD CAPTIONS ----------
+def load_captions(filepath):
+    captions = {}
+    with open(filepath, "r", encoding="utf8") as f:
+        header = f.readline()  # skip header if exists
         for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            # Try different separators: tab, comma, multiple spaces
-            if "\t" in line:
-                parts = line.split("\t")
-            elif "," in line and ".jpg" in line.split(",")[0]:
-                parts = line.split(",", 1)
-            else:
-                parts = line.split(" ", 1)
+            parts = line.strip().split(",", 1)
             if len(parts) != 2:
                 continue
+            image_id, caption = parts
+            caption = "startseq " + caption.lower().strip() + " endseq"
+            captions.setdefault(image_id.strip(), []).append(caption)
+    total_captions = sum(len(v) for v in captions.values())
+    print(f" Loaded {total_captions} captions for {len(captions)} images")
+    return captions
 
-            img_id, caption = parts
-            img_file = img_id.split("#")[0].strip().lower()
-            caption = caption.strip().lower()
-            captions_dict.setdefault(img_file, []).append(caption)
-    print(f"📄 Loaded {sum(len(v) for v in captions_dict.values())} captions for {len(captions_dict)} images")
-    return captions_dict
 
+# ---------- STEP 2: EXTRACT IMAGE FEATURES ----------
+def extract_image_features(image_dir, limit=None):
+    print(" Extracting image features with InceptionV3...")
+    base_model = InceptionV3(weights="imagenet")
+    model = Model(inputs=base_model.input, outputs=base_model.layers[-2].output)
 
-def extract_image_features(image_paths):
-    """Extract 2048-d features per image using InceptionV3 (avg-pooled)"""
-    print("🧠 Loading InceptionV3 for feature extraction...")
-    base_model = InceptionV3(weights='imagenet', include_top=False, pooling='avg')
+    image_files = [
+        os.path.join(image_dir, img)
+        for img in os.listdir(image_dir)
+        if img.lower().endswith(".jpg")
+    ]
+    if limit:
+        image_files = image_files[:limit]
+        print(f" Limiting to {len(image_files)} images (IMAGE_LIMIT={limit})")
+
     features = {}
-    for p in tqdm(image_paths):
+    for img_path in tqdm(image_files, desc="Extracting Features"):
         try:
-            img = tf.keras.preprocessing.image.load_img(p, target_size=IMG_SHAPE)
-            x = tf.keras.preprocessing.image.img_to_array(img)
-            x = np.expand_dims(x, axis=0)
-            x = preprocess_input(x)
-            feat = base_model.predict(x, verbose=0)
-            fname = os.path.basename(p).strip().lower()
-            features[fname] = feat.flatten()
+            img = load_img(img_path, target_size=(299, 299))
+            img = img_to_array(img)
+            img = np.expand_dims(img, axis=0)
+            img = preprocess_input(img)
+            feature = model.predict(img, verbose=0)
+            features[os.path.basename(img_path)] = feature.flatten()
         except Exception as e:
-            print(f"⚠️ Skipped {p}: {e}")
+            print(f" Skipping {img_path}: {e}")
+
+    np.save(FEATURES_FILE, features)
+    print(f" Extracted features for {len(features)} images")
     return features
 
-def create_tokenizer(captions_list):
-    tokenizer = Tokenizer(num_words=MAX_WORDS, oov_token="<OOV>")
-    tokenizer.fit_on_texts(captions_list)
+
+# ---------- STEP 3: TOKENIZER ----------
+def build_tokenizer(captions_dict):
+    all_captions = [c for caps in captions_dict.values() for c in caps]
+    tokenizer = Tokenizer(oov_token="<OOV>")
+    tokenizer.fit_on_texts(all_captions)
+    pickle.dump(tokenizer, open(TOKENIZER_FILE, "wb"))
+    print(f" Vocabulary size: {len(tokenizer.word_index) + 1}")
     return tokenizer
 
+
+# ---------- STEP 4: CREATE DATASET ----------
+def create_training_data(captions_dict, features, tokenizer, max_len=MAX_LEN):
+    X1, X2, y = list(), list(), list()
+    vocab_size = len(tokenizer.word_index) + 1
+    print(" Preparing training sequences...")
+
+    for img, caps in tqdm(captions_dict.items(), desc="Building Sequences"):
+        feature = features.get(img)
+        if feature is None:
+            continue
+        for caption in caps:
+            seq = tokenizer.texts_to_sequences([caption])[0]
+            for i in range(1, len(seq)):
+                in_seq, out_word = seq[:i], seq[i]
+                in_seq = pad_sequences([in_seq], maxlen=max_len)[0]
+                out_word = to_categorical([out_word], num_classes=vocab_size)[0]
+                X1.append(feature)
+                X2.append(in_seq)
+                y.append(out_word)
+
+    print(f" Created {len(X1)} training samples.")
+    return np.array(X1), np.array(X2), np.array(y), vocab_size
+
+
+# ---------- STEP 5: BUILD DUAL-INPUT MODEL ----------
 def build_caption_model(vocab_size):
     inputs1 = Input(shape=(2048,))
-    fe1 = Dense(EMBED_DIM, activation='relu')(inputs1)
+    fe1 = Dropout(0.5)(inputs1)
+    fe2 = Dense(256, activation="relu")(fe1)
 
     inputs2 = Input(shape=(MAX_LEN,))
     se1 = Embedding(vocab_size, EMBED_DIM, mask_zero=True)(inputs2)
-    se2 = LSTM(256)(se1)
+    se2 = LSTM(LSTM_UNITS)(se1)
 
-    decoder1 = add([fe1, se2])
-    decoder2 = Dense(256, activation='relu')(decoder1)
-    outputs = Dense(vocab_size, activation='softmax')(decoder2)
+    decoder1 = add([fe2, se2])
+    decoder2 = Dense(256, activation="relu")(decoder1)
+    outputs = Dense(vocab_size, activation="softmax")(decoder2)
 
     model = Model(inputs=[inputs1, inputs2], outputs=outputs)
-    model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+    model.compile(
+        loss="categorical_crossentropy",
+        optimizer=Adam(learning_rate=0.001),
+        metrics=["accuracy"],
+    )
+    model.summary()
     return model
 
-def plot_training_results(history):
-    """Generate and save training plots and an epoch table image (clean style)."""
-    import pandas as pd
-    import matplotlib.pyplot as plt
-    import numpy as np
 
-    # Create DataFrame from history
+# ---------- STEP 6: SAVE TRAINING TABLE ----------
+def save_training_table(history, save_path):
+    """Generate a table image showing accuracy, loss, val_accuracy, val_loss."""
     df = pd.DataFrame({
-        "Epoch": [f"Epoch {i+1}" for i in range(len(history.history['loss']))],
-        "accuracy": np.round(history.history["accuracy"], 4),
-        "loss": np.round(history.history["loss"], 4),
-        "val_accuracy": np.round(history.history["val_accuracy"], 4),
-        "val_loss": np.round(history.history["val_loss"], 4),
+        "Epoch": [f"Epoch {i+1}" for i in range(len(history.history["loss"]))],
+        "accuracy": np.round(history.history.get("accuracy", []), 4),
+        "val_accuracy": np.round(history.history.get("val_accuracy", []), 4),
+        "loss": np.round(history.history.get("loss", []), 4),
+        "val_loss": np.round(history.history.get("val_loss", []), 4),
     })
 
-    # Plot training curves
-    plt.figure(figsize=(7, 5))
-    plt.plot(history.history["loss"], label="Train Loss")
-    plt.plot(history.history["val_loss"], label="Val Loss")
-    plt.plot(history.history["accuracy"], label="Train Acc")
-    plt.plot(history.history["val_accuracy"], label="Val Acc")
-    plt.title("Training Results (Loss & Accuracy)")
-    plt.xlabel("Epoch")
-    plt.ylabel("Value")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig("training_results.png")
-    print("📊 Saved training_results.png")
-
-    # Generate table as image
-    fig, ax = plt.subplots(figsize=(7, 1 + len(df) * 0.4))
+    fig, ax = plt.subplots(figsize=(8, 1 + len(df) * 0.4))
     ax.axis("off")
-    tbl = ax.table(
+    table = ax.table(
         cellText=df.values,
         colLabels=df.columns,
         loc="center",
-        cellLoc="center",
+        cellLoc="center"
     )
-    tbl.auto_set_font_size(False)
-    tbl.set_fontsize(10)
-    tbl.scale(1.2, 1.2)
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.2, 1.2)
     plt.tight_layout()
-    plt.savefig("training_table.png", bbox_inches="tight", dpi=300)
+    plt.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
-    print("📋 Saved training_table.png (epoch summary)")
+    print(f" Saved training summary table: {save_path}")
 
 
+# ---------- MAIN ----------
 def main():
-    print("🚀 Starting caption model training...\n")
+    print(" Starting caption training pipeline...")
+    captions_dict = load_captions(CAPTIONS_FILE)
+    features = extract_image_features(IMAGES_DIR, limit=IMAGE_LIMIT)
+    tokenizer = build_tokenizer(captions_dict)
+    X1, X2, y, vocab_size = create_training_data(captions_dict, features, tokenizer)
 
-    # Load captions
-    caps = load_captions(CAPTIONS_FILE)
-    all_captions = [c for caplist in caps.values() for c in caplist]
-    print(f"📄 Loaded {len(all_captions)} captions for {len(caps)} images")
-
-    # Tokenizer
-    tokenizer = create_tokenizer(all_captions)
-    vocab_size = min(MAX_WORDS, len(tokenizer.word_index) + 1)
-    os.makedirs("data", exist_ok=True)
-    pickle.dump(tokenizer, open(TOKENIZER_FILE, "wb"))
-    print(f"🔤 Vocabulary size: {vocab_size}")
-
-    # Image list
-    image_paths = glob(os.path.join(IMAGES_DIR, "*.jpg"))
-    image_paths = image_paths[:1000]
-    print(f"🖼️ Found {len(image_paths)} images")
-
-    # Feature extraction
-    features = extract_image_features(image_paths)
-    print(f"✅ Extracted features for {len(features)} images")
-
-    # Create training samples
-    sequences = []
-    for img_file, caplist in caps.items():
-        img_file_clean = os.path.basename(img_file).strip().lower()
-        for cap in caplist:
-            encoded = tokenizer.texts_to_sequences([cap])[0]
-            if len(encoded) < 2:
-                continue
-            in_seq = pad_sequences([encoded[:-1]], maxlen=MAX_LEN)[0]
-            out_seq = to_categorical([encoded[-1]], num_classes=vocab_size)[0]
-            sequences.append((img_file_clean, in_seq, out_seq))
-    print(f"🧩 Total raw caption sequences: {len(sequences)}")
-
-    # Filter to existing features
-    X1, X2, y = [], [], []
-    for img_file, in_seq, out_seq in sequences:
-        if img_file in features:
-            X1.append(features[img_file])
-            X2.append(in_seq)
-            y.append(out_seq)
-    X1, X2, y = np.array(X1), np.array(X2), np.array(y)
-    print(f"📦 Training samples found: {X1.shape[0]}")
-
-    if len(X1) == 0:
-        print("❌ ERROR: No matching images found between captions.txt and images folder.")
-        return
-
-    # Build and train model
     model = build_caption_model(vocab_size)
-    model.summary()
-
-    print("\n🏋️ Training model (5 epochs)...\n")
+    print(f" Training caption model ({EPOCHS} epochs)...")
     history = model.fit(
-        [X1, X2], y,
-        epochs=5,
-        batch_size=32,
-        validation_split=0.1
+        [X1, X2],
+        y,
+        epochs=EPOCHS,
+        batch_size=64,
+        validation_split=0.1,
+        verbose=1
     )
 
-    # Save model
     model.save(CAPTION_MODEL_FILE)
-    print(f"✅ Saved caption model: {CAPTION_MODEL_FILE}")
+    print(f" Saved caption model to {CAPTION_MODEL_FILE}")
 
-    # Generate charts
-    plot_training_results(history)
-    print("\n🎉 Training completed successfully!")
+    table_path = os.path.join(RESULT_DIR, "caption_training_table.png")
+    save_training_table(history, table_path)
+
+    print(f" All outputs saved in {RESULT_DIR}")
+
 
 if __name__ == "__main__":
     main()

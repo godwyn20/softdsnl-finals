@@ -1,15 +1,16 @@
 """
 Django view for sentiment prediction.
 """
-
+import os
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 import pickle
 import numpy as np
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
-TOKENIZER_FILE = "model_training/data/sentiment_tokenizer.pkl"  # adjust path if needed
-SENTIMENT_MODEL_FILE = "model_training/sentiment_model.h5"
+TOKENIZER_FILE = os.path.join("..", "result", "sentiment", "sentiment_tokenizer.pkl")
+SENTIMENT_MODEL_FILE = os.path.join("..", "result", "sentiment", "sentiment_model.h5")
+
 
 # lazy load
 _tokenizer = None

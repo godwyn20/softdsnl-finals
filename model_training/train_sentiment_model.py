@@ -1,15 +1,17 @@
 """
 Train a simple sentiment classifier (binary: positive/negative) using Flickr captions.
 ------------------------------------------------------------
-✅ Uses Hugging Face 'datasets' cleanly (optional, not required)
-✅ Compatible with Flickr8k captions.txt format
-✅ Generates training curve and table images
+ Uses Flickr8k captions.txt
+ Saves results to ../result/sentiment/
+ Generates loss/accuracy charts + epoch table images
+ Handles automatic folder creation
 """
 
 import os
 import pickle
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 from datasets import Dataset  # from 'datasets' package
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
@@ -18,16 +20,24 @@ from tensorflow.keras.layers import Embedding, LSTM, Dense
 
 # ---------- CONFIG ----------
 CAPTIONS_FILE = "../data/captions.txt"
-TOKENIZER_FILE = "data/sentiment_tokenizer.pkl"
-SENTIMENT_MODEL_FILE = "sentiment_model.h5"
+
+BASE_RESULT_DIR = "../result/sentiment"
+os.makedirs(BASE_RESULT_DIR, exist_ok=True)
+
+TOKENIZER_FILE = os.path.join(BASE_RESULT_DIR, "sentiment_tokenizer.pkl")
+SENTIMENT_MODEL_FILE = os.path.join(BASE_RESULT_DIR, "sentiment_model.h5")
+TRAIN_CURVE_IMG = os.path.join(BASE_RESULT_DIR, "sentiment_training_results.png")
+EPOCH_TABLE_IMG = os.path.join(BASE_RESULT_DIR, "sentiment_training_table.png")
+
 MAX_WORDS = 5000
 MAX_LEN = 50
 # ----------------------------
 
+
 def build_dataset_from_captions(captions_filepath, limit=5000):
     """Flexible loader for Flickr8k captions (handles tab, comma, or spaces)."""
     texts, labels = [], []
-    print("🧠 Building sentiment dataset from captions:", captions_filepath)
+    print(" Building sentiment dataset from captions:", captions_filepath)
 
     positive_keywords = {"happy", "smile", "smiling", "beautiful", "love", "lovely", "cute", "fun"}
     negative_keywords = {"sad", "cry", "crying", "angry", "hate", "bad", "ugly", "broken"}
@@ -60,17 +70,15 @@ def build_dataset_from_captions(captions_filepath, limit=5000):
             elif any(w in caption for w in positive_keywords):
                 labels.append(1)
             else:
-                labels.append(1)  # neutral default
+                labels.append(1)  # neutral default = positive
 
-    print(f"✅ Loaded {len(texts)} captions for sentiment training.")
+    print(f" Loaded {len(texts)} captions for sentiment training.")
     return texts, np.array(labels)
 
 
 def plot_training_results(history):
     """Plot and save training loss/accuracy curves and epoch table."""
-    import pandas as pd
-
-    # Plot training curves
+    # --- Plot training curves ---
     plt.figure(figsize=(7, 5))
     plt.plot(history.history["loss"], label="Train Loss")
     plt.plot(history.history["val_loss"], label="Val Loss")
@@ -82,10 +90,11 @@ def plot_training_results(history):
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig("sentiment_training_results.png")
-    print("📊 Saved sentiment_training_results.png")
+    plt.savefig(TRAIN_CURVE_IMG)
+    plt.close()
+    print(f" Saved training curve → {TRAIN_CURVE_IMG}")
 
-    # Create and save epoch summary table (same style you requested)
+    # --- Create and save epoch summary table ---
     df = pd.DataFrame({
         "Epoch": [f"Epoch {i+1}" for i in range(len(history.history["loss"]))],
         "accuracy": np.round(history.history["accuracy"], 4),
@@ -101,9 +110,10 @@ def plot_training_results(history):
     table.set_fontsize(10)
     table.scale(1.2, 1.2)
     plt.tight_layout()
-    plt.savefig("sentiment_training_table.png", bbox_inches="tight", dpi=300)
+    plt.savefig(EPOCH_TABLE_IMG, bbox_inches="tight", dpi=300)
     plt.close(fig)
-    print("📋 Saved sentiment_training_table.png (epoch summary)")
+    print(f" Saved epoch summary table → {EPOCH_TABLE_IMG}")
+
 
 def main():
     # Step 1: Build dataset
@@ -115,7 +125,7 @@ def main():
     sequences = tokenizer.texts_to_sequences(texts)
     padded = pad_sequences(sequences, maxlen=MAX_LEN, padding="post")
 
-    # Step 3: Convert to HuggingFace Dataset (for consistency)
+    # Step 3: Convert to HuggingFace Dataset (for inspection)
     dataset = Dataset.from_dict({"text": texts, "label": labels})
     print(dataset)
 
@@ -129,18 +139,21 @@ def main():
     model.summary()
 
     # Step 5: Train model
-    print("\n🏋️ Training sentiment model (5 epochs)...\n")
+    print("\n Training sentiment model (5 epochs)...\n")
     history = model.fit(padded, labels, epochs=5, batch_size=32, validation_split=0.1)
 
     # Step 6: Save model + tokenizer
-    os.makedirs("data", exist_ok=True)
     pickle.dump(tokenizer, open(TOKENIZER_FILE, "wb"))
     model.save(SENTIMENT_MODEL_FILE)
-    print(f"✅ Saved sentiment model: {SENTIMENT_MODEL_FILE}")
+    print(f" Model saved to: {SENTIMENT_MODEL_FILE}")
+    print(f" Tokenizer saved to: {TOKENIZER_FILE}")
 
     # Step 7: Plot training results
     plot_training_results(history)
-    print("\n🎉 Sentiment training completed successfully!")
+
+    print("\n Sentiment training completed successfully! Results stored in:")
+    print(f" {os.path.abspath(BASE_RESULT_DIR)}")
+
 
 if __name__ == "__main__":
     main()

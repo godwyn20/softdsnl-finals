@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'image_caption',
     'sentiment',
+    'combined',
 ]
 
 MIDDLEWARE = [
