@@ -29,42 +29,72 @@
 
 ##  Project Structure
 ```
-flickr8k_project/
+softdsnl-finals/
 │
-├── flickr8k_backend/              # Django project
-│   ├── manage.py
-│   ├── flickr8k_backend/          # Django settings folder
-│   │   ├── settings.py
+├── data/
+│   ├── images/                     # Flickr8k image dataset
+│   └── captions.txt                # Image-caption pairs
+│
+├── flickr8k_backend/               # Django backend project
+│   ├── combined/                   # Combined caption + sentiment endpoint
+│   │   ├── __pycache__/
 │   │   ├── urls.py
-│   │   ├── asgi.py
-│   │   └── wsgi.py
+│   │   └── views.py
 │   │
-│   ├── image_caption/             # app for image captioning
-│   │   ├── views.py
-│   │   ├── models.py
-│   │   ├── utils/
+│   ├── image_caption/              # Image captioning app
+│   │   ├── __pycache__/
+│   │   ├── migrations/
+│   │   ├── utils/                  # Helper functions
+│   │   │   ├── caption_generator.py
 │   │   │   ├── preprocess.py
-│   │   │   └── caption_generator.py
-│   │   └── urls.py
-│   │
-│   ├── sentiment/                 # app for sentiment analysis
-│   │   ├── views.py
-│   │   ├── analyzer.py
+│   │   │   └── __init__.py
+│   │   ├── admin.py
+│   │   ├── apps.py
 │   │   ├── models.py
-│   │   └── urls.py
+│   │   ├── tests.py
+│   │   ├── urls.py
+│   │   └── views.py
 │   │
-│   └── requirements.txt
+│   ├── sentiment/                  # Sentiment analysis app
+│   │   ├── __pycache__/
+│   │   ├── migrations/
+│   │   ├── admin.py
+│   │   ├── apps.py
+│   │   ├── models.py
+│   │   ├── tests.py
+│   │   ├── urls.py
+│   │   ├── views.py
+│   │   └── __init__.py
+│   │
+│   ├── asgi.py
+│   ├── manage.py
+│   ├── settings.py
+│   ├── urls.py
+│   └── wsgi.py
 │
-├── model_training/                # for training scripts
+├── model_training/                 # Model training scripts
 │   ├── train_caption_model.py
-│   ├── train_sentiment_model.py
-│   └── evaluation.ipynb
+│   └── train_sentiment_model.py
 │
-├── data/                          # dataset and preprocessing artifacts
-│   ├── images/
-│   └── captions.txt
+├── result/                         # Trained models and outputs
+│   ├── caption/
+│   │   ├── caption_model.h5
+│   │   ├── caption_training_table.png
+│   │   ├── image_features.npy
+│   │   └── tokenizer.pkl
+│   │
+│   └── sentiment/
+│       ├── sentiment_model.h5
+│       ├── sentiment_tokenizer.pkl
+│       ├── sentiment_training_results.png
+│       └── sentiment_training_table.png
 │
+├── venv/                           # Virtual environment
+├── db.sqlite3
+├── requirements.txt
+├── .gitignore
 └── README.md
+
 ```
 
 ---
